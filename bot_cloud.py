@@ -10,9 +10,11 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import requests
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
@@ -188,6 +190,22 @@ def set_private_started(user_id):
 def has_private_started(user_id):
     return str(user_id) in DATA.get("private_started", {})
 
+# ========== HEALTH SERVER ==========
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+# ========== KIỂM TRA MEMBER / BOT TAG ==========
 async def is_member(context, user_id):
     try:
         member = await context.bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
@@ -255,7 +273,6 @@ async def handle_regular_message(update: Update, context: ContextTypes.DEFAULT_T
                     TAG_WARNED_USERS.add(user.id)
                 except Exception:
                     pass
-
 # ========== WILLCLOUDS FUNCTIONS ==========
 def java_url_encode(s):
     bs = str(s).encode('utf-8')
@@ -531,7 +548,6 @@ def trial_question_keyboard(user_id):
         [InlineKeyboardButton("✅ Có", callback_data=f"receive_trial_yes:{user_id}")],
         [InlineKeyboardButton("❌ Không", callback_data=f"receive_trial_no:{user_id}")]
     ])
-
 # ========== HANDLERS ==========
 async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     my_chat_member = update.my_chat_member
@@ -1191,6 +1207,7 @@ async def handle_pending_on_startup(app):
                     pass
 
 def main():
+    start_health_server()
     app = (
         Application.builder()
         .token(BOT_TOKEN)
