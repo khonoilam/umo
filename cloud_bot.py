@@ -467,6 +467,51 @@ def receive_trial_cloud(user_id, token, cuid):
     res = r.json()
     return res.get("code") == 0, res
 
+def login_password_cloud(email, password, cuid):
+    enc_pw = rsa_encrypt(password)
+    data = {
+        "cuid": cuid,
+        "ts": str(int(time.time() * 1000)),
+        "userId": "",
+        "cid": CID,
+        "chnl": CHANNEL,
+        "cver": CVER,
+        "locale": LOCALE,
+        "clientType": CLIENT_TYPE,
+        "account": email,
+        "loginType": "ACCOUNT_PASSWORD",
+        "authContent": enc_pw,
+        "captcha": "",
+        "p": password,
+    }
+    sig, b = sign(data)
+    h = make_headers(content_type=True)
+    h["x-signature"] = sig
+    r = requests.post("https://oem-core.willclouds.com/saas-api/cloud-client/auth/login", data=b, headers=h, timeout=20)
+    res = r.json()
+    if res.get("code") == 0:
+        return res["data"]["userId"], res["data"]["token"]
+    else:
+        raise Exception("login_password_cloud failed: " + r.text)
+
+def check_login_cloud(user_id, token, cuid):
+    data = {
+        "cuid": cuid,
+        "ts": str(int(time.time() * 1000)),
+        "userId": str(user_id),
+        "cid": CID,
+        "chnl": CHANNEL,
+        "cver": CVER,
+        "locale": LOCALE,
+        "clientType": CLIENT_TYPE,
+    }
+    sig, b = sign(data)
+    h = make_headers(token=token, content_type=True)
+    h["x-signature"] = sig
+    r = requests.post("https://oem-api.willclouds.com/saas-api/cloud-client/user/get-experience-qual", data=b, headers=h, timeout=20)
+    res = r.json()
+    return res
+
 # ========== LOCKS ==========
 USER_LOCKS = {}
 USER_LOCKS_GUARD = asyncio.Lock()
@@ -1053,13 +1098,32 @@ async def receive_trial_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message_text(query, "⏳ Đang nhận máy trial, vui lòng chờ...")
         loop = asyncio.get_running_loop()
         try:
+            cloud_user_id = pending_data["cloud_user_id"]
+            cloud_token = pending_data["cloud_token"]
+            cuid = pending_data["cuid"]
+
+            # Kiểm tra token còn hiệu lực không
+            check_res = await loop.run_in_executor(
+                EXECUTOR,
+                lambda: check_login_cloud(cloud_user_id, cloud_token, cuid)
+            )
+            if check_res.get("code") == 1000000008:
+                await safe_edit_message_text(query, "🔐 Token hết hạn, đang đăng nhập lại...")
+                new_uid, new_token = await loop.run_in_executor(
+                    EXECUTOR,
+                    login_password_cloud,
+                    pending_data["email"],
+                    pending_data["password"],
+                    cuid
+                )
+                pending_data["cloud_user_id"] = new_uid
+                pending_data["cloud_token"] = new_token
+                save_pending()
+                cloud_user_id, cloud_token = new_uid, new_token
+
             ok, res = await loop.run_in_executor(
                 EXECUTOR,
-                lambda: receive_trial_cloud(
-                    pending_data["cloud_user_id"],
-                    pending_data["cloud_token"],
-                    pending_data["cuid"]
-                )
+                lambda: receive_trial_cloud(cloud_user_id, cloud_token, cuid)
             )
             if ok:
                 await safe_edit_message_text(
