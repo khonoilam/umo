@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sys
+import html
 import threading
 import requests
 from datetime import datetime, timezone, timedelta
@@ -20,7 +21,7 @@ from Crypto.Cipher import PKCS1_v1_5
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatMemberHandler, MessageHandler, filters
 
-# ========== CẤU HÌNH BOT ==========
+# ========== CẤU HÌNH ==========
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is not set")
@@ -28,7 +29,6 @@ ADMIN_ID = 7267437767
 GROUP_ID = -1004318229096
 GROUP_LINK = "https://t.me/cloudfreeaot"
 
-# ========== CẤU HÌNH JSONBIN ==========
 JSONBIN_API_KEY = os.environ.get("JSONBIN_API_KEY")
 if not JSONBIN_API_KEY:
     raise ValueError("JSONBIN_API_KEY is not set")
@@ -41,6 +41,8 @@ HEADERS = {
     "X-Master-Key": JSONBIN_API_KEY,
     "Content-Type": "application/json"
 }
+
+MAX_MSG_LEN = 4000
 
 def load_json_from_bin(bin_id):
     url = f"{JSONBIN_BASE}/{bin_id}/latest"
@@ -69,9 +71,9 @@ def save_json_to_bin(bin_id, data):
     return False
 
 # ========== DỮ LIỆU ==========
-DATA = {"users": {}, "daily_counts": {}, "private_started": {}, "banned": {}, "tag_users": []}
+DATA = {"users": {}, "daily_counts": {}, "private_started": {}, "banned": {}, "tag_users": [], "last_cloud_status": None, "_dirty": False}
 GROUPS = []
-PENDING = {}
+PENDING = {"_dirty": False}
 LAST_CLOUD_STATUS = None
 
 tmp = load_json_from_bin(USERS_BIN_ID)
@@ -79,8 +81,7 @@ if tmp is not None and isinstance(tmp, dict):
     DATA = tmp
     LAST_CLOUD_STATUS = tmp.get("last_cloud_status")
 else:
-    DATA = {"users": {}, "daily_counts": {}, "private_started": {}, "banned": {}, "tag_users": []}
-    LAST_CLOUD_STATUS = None
+    DATA = {"users": {}, "daily_counts": {}, "private_started": {}, "banned": {}, "tag_users": [], "last_cloud_status": None, "_dirty": False}
 
 tmp_groups = load_json_from_bin(GROUPS_BIN_ID)
 if tmp_groups is not None and isinstance(tmp_groups, list):
@@ -92,13 +93,13 @@ tmp_pending = load_json_from_bin(PENDING_BIN_ID)
 if tmp_pending is not None and isinstance(tmp_pending, dict):
     PENDING = tmp_pending
 else:
-    PENDING = {}
+    PENDING = {"_dirty": False}
 
 if GROUP_ID not in GROUPS:
     GROUPS.append(GROUP_ID)
     save_json_to_bin(GROUPS_BIN_ID, GROUPS)
 
-# ========== CẤU HÌNH UMO CLOUD ==========
+# ========== UMO CLOUD ==========
 CLIENT_CODE = "ae02b"
 CID = "50000"
 CVER = "10010016"
@@ -117,32 +118,13 @@ DXhWaqu9oytBCaBg4nEA5O/y44qnm+NI+Tu35ulGDzSfQxP2js9LV3bcqjv/hP0S
 EMAIL_PREFIX = "aotvippro"
 
 # ========== LƯU TRỮ ==========
-def load_data():
-    global DATA
-    tmp = load_json_from_bin(USERS_BIN_ID)
-    if tmp and isinstance(tmp, dict):
-        DATA = tmp
-
 def save_data():
     save_json_to_bin(USERS_BIN_ID, DATA)
-
-def load_groups():
-    global GROUPS
-    tmp = load_json_from_bin(GROUPS_BIN_ID)
-    if tmp is not None and isinstance(tmp, list):
-        GROUPS = tmp
 
 def save_groups():
     save_json_to_bin(GROUPS_BIN_ID, GROUPS)
 
-def load_pending():
-    global PENDING
-    tmp = load_json_from_bin(PENDING_BIN_ID)
-    if tmp and isinstance(tmp, dict):
-        PENDING = tmp
-
 def save_pending():
-    PENDING["_dirty"] = False
     save_json_to_bin(PENDING_BIN_ID, PENDING)
 
 # ========== LOGGING ==========
@@ -200,10 +182,12 @@ def increment_user_account(user_id):
         DATA["daily_counts"][today]["by_user"][uid] = 0
     DATA["daily_counts"][today]["by_user"][uid] += 1
     DATA["_dirty"] = True
+    save_data()
 
 def set_private_started(user_id):
     DATA["private_started"][str(user_id)] = True
     DATA["_dirty"] = True
+    save_data()
 
 def has_private_started(user_id):
     return str(user_id) in DATA.get("private_started", {})
@@ -216,8 +200,9 @@ def ensure_account_today_reset(user_id):
             DATA["users"][uid]["accounts_today"] = 0
             DATA["users"][uid]["last_account_date"] = today
             DATA["_dirty"] = True
+            save_data()
 
-# ========== HEALTH SERVER ==========
+# ========== HEALTH ==========
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -232,7 +217,7 @@ def start_health_server():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-# ========== KIỂM TRA MEMBER / BOT TAG ==========
+# ========== KIỂM TRA ==========
 async def is_member(context, user_id):
     try:
         member = await context.bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
@@ -304,7 +289,7 @@ async def handle_regular_message(update: Update, context: ContextTypes.DEFAULT_T
                 except Exception:
                     pass
 
-# ========== WILLCLOUDS FUNCTIONS ==========
+# ========== WILLCLOUDS ==========
 def java_url_encode(s):
     bs = str(s).encode('utf-8')
     out = []
@@ -322,7 +307,6 @@ def build_query(obj):
 
 def sign(obj):
     b = build_query(obj)
-    # MD5 theo yêu cầu của Willclouds
     w = hashlib.md5((b + SALT).encode()).hexdigest()
     return w[4:20], b
 
@@ -409,6 +393,7 @@ def read_code_from_mail(token, timeout=240):
 
 def request_with_retry(method, url, **kwargs):
     max_retries = 3
+    response = None
     for attempt in range(max_retries):
         try:
             response = requests.request(method, url, **kwargs)
@@ -418,7 +403,7 @@ def request_with_retry(method, url, **kwargs):
                 time.sleep(2)
                 continue
             return response
-        except Exception as e:
+        except Exception:
             if attempt == max_retries - 1:
                 raise
             time.sleep(2)
@@ -586,6 +571,32 @@ async def safe_answer_callback(query, text=None, show_alert=False):
         if "Query is too old" not in str(e) and "query id is invalid" not in str(e):
             logger.warning(f"Answer callback error (ignored): {e}")
 
+async def send_long_message(context, chat_id, text, parse_mode=None):
+    """Chia tin nhắn dài thành nhiều phần để tránh lỗi Message is too long."""
+    if len(text) <= MAX_MSG_LEN:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error(f"Send message error: {e}")
+        return
+    # Chia theo dòng để không cắt giữa nội dung
+    lines = text.split("\n")
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > MAX_MSG_LEN:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=parse_mode)
+            except Exception as e:
+                logger.error(f"Send chunk error: {e}")
+            chunk = line + "\n"
+        else:
+            chunk += line + "\n"
+    if chunk.strip():
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error(f"Send last chunk error: {e}")
+
 # ========== CHỐNG SPAM ==========
 SPAM_DATA = {}
 
@@ -719,6 +730,7 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if uid in DATA["tag_users"]:
                 DATA["tag_users"].remove(uid)
                 DATA["_dirty"] = True
+                save_data()
                 logger.info(f"User {uid} left group, removed from tag_users")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -829,14 +841,17 @@ async def create_account_with_progress(context, query, user_id, user_mention):
             await safe_edit_message_text(query, "⚠️ Bạn đang có yêu cầu đang xử lý, vui lòng chờ.")
             return
 
-        # Xóa pending cũ nếu có
         if uid in PENDING:
             del PENDING[uid]
             PENDING["_dirty"] = True
+            save_pending()
 
-        # Đặt trạng thái creating
         PENDING[uid] = {"chat_id": user_id, "status": "creating"}
         PENDING["_dirty"] = True
+        save_pending()
+
+        email = None
+        new_password = None
 
         try:
             await safe_edit_message_text(query, "⏳ Đang tạo email tạm...")
@@ -856,7 +871,6 @@ async def create_account_with_progress(context, query, user_id, user_mention):
             new_password = "aot" + ''.join(random.choices(string.ascii_letters + string.digits, k=5))
             await loop.run_in_executor(EXECUTOR, set_password_cloud, cloud_user_id, cloud_token, new_password, cuid)
 
-            # Lưu thông tin pending
             PENDING[uid] = {
                 "email": email,
                 "password": new_password,
@@ -868,16 +882,14 @@ async def create_account_with_progress(context, query, user_id, user_mention):
                 "trial_fail_sent": False
             }
             PENDING["_dirty"] = True
+            save_pending()
 
-            # Gửi thông tin cho user
-            try:
-                await send_account_info(context, user_id, email, new_password)
+            sent = await send_account_info(context, user_id, email, new_password)
+            if sent:
                 PENDING[uid]["account_sent"] = True
                 PENDING["_dirty"] = True
-            except Exception as e:
-                logger.error(f"Failed to send DM: {e}")
+                save_pending()
 
-            # Cập nhật quota
             try:
                 increment_user_account(user_id)
                 LAST_ACCOUNT_CREATED[uid] = time.time()
@@ -891,7 +903,6 @@ async def create_account_with_progress(context, query, user_id, user_mention):
             except Exception as e:
                 logger.error(f"Failed to update quota: {e}")
 
-            # Hoàn tất
             if query.message.chat.type == "private":
                 await safe_edit_message_text(query, "✅ Tài khoản đã được tạo thành công.")
             else:
@@ -911,20 +922,11 @@ async def create_account_with_progress(context, query, user_id, user_mention):
             else:
                 user_msg = "❌ Lỗi không xác định khi tạo tài khoản. Vui lòng ib @jdaydichs."
             await safe_edit_message_text(query, user_msg)
-
-            # Lưu pending để bù sau (nếu lỗi do mạng tạm thời)
-            if "send verification failed" not in error_msg and "login failed" not in error_msg:
-                PENDING[uid] = {
-                    "chat_id": user_id,
-                    "status": "failed",
-                    "email": email if 'email' in locals() else "",
-                    "password": new_password if 'new_password' in locals() else ""
-                }
-                PENDING["_dirty"] = True
         finally:
             if uid in PENDING and isinstance(PENDING[uid], dict) and PENDING[uid].get("status") == "creating":
                 del PENDING[uid]
                 PENDING["_dirty"] = True
+                save_pending()
 
 async def get_cloud_machine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -932,7 +934,6 @@ async def get_cloud_machine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     user_id = user.id
 
-    # Safe parse callback data
     data = query.data.split(":")
     if len(data) != 2 or data[0] != "get_cloud_machine":
         await safe_answer_callback(query, "⛔ Dữ liệu nút không hợp lệ!", show_alert=True)
@@ -966,6 +967,7 @@ async def get_cloud_machine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pending_data.get("trial_received", False):
             del PENDING[uid]
             PENDING["_dirty"] = True
+            save_pending()
         else:
             try:
                 await send_account_info(context, user_id, pending_data['email'], pending_data['password'])
@@ -1020,10 +1022,19 @@ async def confirm_create_new_callback(update: Update, context: ContextTypes.DEFA
     if await check_user_blocked(update, context):
         return
 
+    if not await is_member(context, user_id):
+        await safe_edit_message_text(
+            query,
+            "❌ Bạn chưa tham gia nhóm! Vui lòng tham gia rồi bấm Verify.",
+            reply_markup=join_group_keyboard()
+        )
+        return
+
     uid = str(user_id)
     if uid in PENDING:
         del PENDING[uid]
         PENDING["_dirty"] = True
+        save_pending()
 
     await safe_edit_message_text(query, "⏳ Đang bắt đầu tạo tài khoản mới...")
     await create_account_with_progress(context, query, user_id, user.mention_markdown())
@@ -1068,15 +1079,18 @@ async def cancel_create_new_callback(update: Update, context: ContextTypes.DEFAU
 
 # ========== TAG ==========
 def build_tag_mentions():
+    """Tạo chuỗi mention HTML an toàn, escape tên tránh lỗi parse."""
     tags = []
     for uid in DATA.get("tag_users", []):
         user_info = DATA["users"].get(str(uid), {})
         username = user_info.get("username")
         first_name = user_info.get("first_name") or "User"
         if username:
-            tags.append(f"@{username}")
+            safe_username = html.escape(username)
+            tags.append(f"@{safe_username}")
         else:
-            tags.append(f'<a href="tg://user?id={uid}">{first_name}</a>')
+            safe_name = html.escape(first_name)
+            tags.append(f'<a href="tg://user?id={uid}">{safe_name}</a>')
     return " ".join(tags)
 
 async def notify_all_groups(context, text):
@@ -1088,6 +1102,12 @@ async def notify_all_groups(context, text):
             await context.bot.send_message(chat_id=gid, text=text, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Failed to notify group {gid}: {e}")
+            # Thử gửi lại không có parse_mode nếu lỗi HTML
+            try:
+                plain = re.sub(r'<[^>]+>', '', text)
+                await context.bot.send_message(chat_id=gid, text=plain)
+            except Exception as e2:
+                logger.error(f"Fallback send failed: {e2}")
 
 async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message:
@@ -1109,6 +1129,7 @@ async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in DATA["tag_users"]:
         DATA["tag_users"].append(uid)
         DATA["_dirty"] = True
+        save_data()
         await update.message.reply_text("✅ Đã thêm bạn vào thông báo khi có máy.")
     else:
         await update.message.reply_text("⛔ Bạn đã đăng ký tag rồi.")
@@ -1131,6 +1152,7 @@ async def untag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid in DATA["tag_users"]:
         DATA["tag_users"].remove(uid)
         DATA["_dirty"] = True
+        save_data()
         await update.message.reply_text("✅ Đã bỏ bạn khỏi thông báo khi có máy.")
     else:
         await update.message.reply_text("⛔ Bạn chưa đăng ký tag.")
@@ -1188,7 +1210,6 @@ async def receive_trial_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cloud_token = pending_data["cloud_token"]
             cuid = pending_data["cuid"]
 
-            # Kiểm tra token còn hiệu lực không
             check_res = await loop.run_in_executor(
                 EXECUTOR,
                 lambda: check_login_cloud(cloud_user_id, cloud_token, cuid)
@@ -1205,6 +1226,7 @@ async def receive_trial_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pending_data["cloud_user_id"] = new_uid
                 pending_data["cloud_token"] = new_token
                 PENDING["_dirty"] = True
+                save_pending()
                 cloud_user_id, cloud_token = new_uid, new_token
 
             ok, res = await loop.run_in_executor(
@@ -1224,20 +1246,23 @@ async def receive_trial_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 pending_data["trial_received"] = True
                 PENDING["_dirty"] = True
+                save_pending()
 
                 if LAST_CLOUD_STATUS != "available":
                     mentions = build_tag_mentions()
-                    notify_text = "✅ Máy cloud đã có lại, mọi người nhận đi!"
+                    notify_text = "✅ <b>Máy cloud đã có lại, mọi người nhận đi!</b>"
                     if mentions:
                         notify_text += "\n" + mentions
                     await notify_all_groups(context, notify_text)
                     LAST_CLOUD_STATUS = "available"
                     DATA["last_cloud_status"] = LAST_CLOUD_STATUS
                     DATA["_dirty"] = True
+                    save_data()
 
                 if uid in PENDING:
                     del PENDING[uid]
                     PENDING["_dirty"] = True
+                    save_pending()
             else:
                 if isinstance(res, dict) and (
                     "not eligible" in str(res.get("msg", "")) or res.get("code") == 1003000071
@@ -1254,18 +1279,21 @@ async def receive_trial_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if uid in PENDING:
                         del PENDING[uid]
                         PENDING["_dirty"] = True
+                        save_pending()
                 elif isinstance(res, dict) and "all been claimed" in str(res.get("msg", "")):
                     if LAST_CLOUD_STATUS != "unavailable":
-                        await notify_all_groups(context, "⛔ Máy cloud đã hết, vui lòng chờ.")
+                        await notify_all_groups(context, "⛔ <b>Máy cloud đã hết, vui lòng chờ.</b>")
                         LAST_CLOUD_STATUS = "unavailable"
                         DATA["last_cloud_status"] = LAST_CLOUD_STATUS
                         DATA["_dirty"] = True
+                        save_data()
 
                     if not pending_data.get("trial_fail_sent", False):
                         try:
                             await send_account_info(context, user_id, pending_data['email'], pending_data['password'])
                             pending_data["trial_fail_sent"] = True
                             PENDING["_dirty"] = True
+                            save_pending()
                         except Exception:
                             pass
 
@@ -1314,7 +1342,6 @@ async def receive_trial_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with user_lock:
         pending_data = PENDING.get(uid)
         if pending_data and not isinstance(pending_data, bool) and pending_data.get("status") != "creating":
-            # Luôn gửi lại thông tin tài khoản khi người dùng bấm Không
             try:
                 await send_account_info(context, user_id, pending_data['email'], pending_data['password'])
             except Exception:
@@ -1323,6 +1350,7 @@ async def receive_trial_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if uid in PENDING:
             del PENDING[uid]
             PENDING["_dirty"] = True
+            save_pending()
 
     await safe_edit_message_text(
         query,
@@ -1359,6 +1387,7 @@ async def cam(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     DATA.setdefault("banned", {})[str(user_id)] = True
     DATA["_dirty"] = True
+    save_data()
     await update.message.reply_text(f"✅ Đã cấm người dùng {user_id} sử dụng bot.")
     try:
         await context.bot.send_message(
@@ -1385,6 +1414,7 @@ async def mocam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(user_id) in DATA.get("banned", {}):
         del DATA["banned"][str(user_id)]
         DATA["_dirty"] = True
+        save_data()
         await update.message.reply_text(f"✅ Đã mở cam cho người dùng {user_id}.")
     else:
         await update.message.reply_text("Người dùng này không bị cấm.")
@@ -1401,6 +1431,7 @@ async def reset_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info["last_account_date"] = None
     DATA["daily_counts"].pop(today, None)
     DATA["_dirty"] = True
+    save_data()
     await update.message.reply_text("✅ Đã reset toàn bộ số tài khoản hôm nay về 0.")
 
 async def thongtin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1413,20 +1444,35 @@ async def thongtin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not users:
         await update.message.reply_text("Chưa có người dùng nào.")
         return
-    text = "📋 THÔNG TIN NGƯỜI DÙNG\n\n"
-    for uid, info in users.items():
+    # Sắp xếp theo tổng acc giảm dần
+    sorted_users = sorted(users.items(), key=lambda x: x[1].get("total_accounts", 0), reverse=True)
+    header = "📋 THÔNG TIN NGƯỜI DÙNG\n\n"
+    text = header
+    for uid, info in sorted_users:
         username = info.get("username") or "N/A"
         first_name = info.get("first_name") or "N/A"
         total_acc = info.get("total_accounts", 0)
         today_acc = info.get("accounts_today", 0)
-        text += (
+        entry = (
             f"👤 ID: {uid}\n"
             f"   • Username: @{username}\n"
             f"   • Tên: {first_name}\n"
             f"   • Tổng acc đã tạo: {total_acc}\n"
             f"   • Acc hôm nay: {today_acc}\n\n"
         )
-    await update.message.reply_text(text)
+        if len(text) + len(entry) > MAX_MSG_LEN:
+            try:
+                await update.message.reply_text(text)
+            except Exception as e:
+                logger.error(f"Send info chunk error: {e}")
+            text = entry
+        else:
+            text += entry
+    if text.strip():
+        try:
+            await update.message.reply_text(text)
+        except Exception as e:
+            logger.error(f"Send info last chunk error: {e}")
 
 async def kiemtra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message:
@@ -1438,8 +1484,9 @@ async def kiemtra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     daily = DATA.get("daily_counts", {}).get(today, {})
     total_today = daily.get("total", 0)
     by_user = daily.get("by_user", {})
-    text = f"📊 THỐNG KÊ HÔM NAY ({today})\n"
-    text += f"Tổng số acc đã tạo: {total_today}\n\n"
+    header = f"📊 THỐNG KÊ HÔM NAY ({today})\n"
+    header += f"Tổng số acc đã tạo: {total_today}\n\n"
+    text = header
     if by_user:
         text += "Chi tiết theo người dùng:\n"
         for uid, count in by_user.items():
@@ -1452,10 +1499,22 @@ async def kiemtra(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 display_name = first_name
             else:
                 display_name = "Không tên"
-            text += f"   • {display_name} (ID: {uid}): {count} acc\n"
+            entry = f"   • {display_name} (ID: {uid}): {count} acc\n"
+            if len(text) + len(entry) > MAX_MSG_LEN:
+                try:
+                    await update.message.reply_text(text)
+                except Exception as e:
+                    logger.error(f"Send stats chunk error: {e}")
+                text = entry
+            else:
+                text += entry
     else:
         text += "Chưa có ai tạo acc hôm nay."
-    await update.message.reply_text(text)
+    if text.strip():
+        try:
+            await update.message.reply_text(text)
+        except Exception as e:
+            logger.error(f"Send stats last chunk error: {e}")
 
 async def thongbao(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message:
@@ -1492,7 +1551,7 @@ async def nhom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Bot hiện đang có mặt trong {count} nhóm.")
     if count > 0:
         ids = "\n".join([str(gid) for gid in GROUPS])
-        await update.message.reply_text(f"Danh sách ID nhóm:\n{ids}")
+        await send_long_message(context, update.effective_chat.id, f"Danh sách ID nhóm:\n{ids}")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
@@ -1509,12 +1568,15 @@ async def backup_data_task():
     loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(60)
-        if DATA.get("_dirty"):
-            await loop.run_in_executor(EXECUTOR, save_data)
-            DATA["_dirty"] = False
-        if PENDING.get("_dirty"):
-            await loop.run_in_executor(EXECUTOR, save_pending)
-            PENDING["_dirty"] = False
+        try:
+            if DATA.get("_dirty"):
+                await loop.run_in_executor(EXECUTOR, save_data)
+                DATA["_dirty"] = False
+            if PENDING.get("_dirty"):
+                await loop.run_in_executor(EXECUTOR, save_pending)
+                PENDING["_dirty"] = False
+        except Exception as e:
+            logger.error(f"Backup task error: {e}")
 
 async def cleanup_spam_data_task():
     while True:
@@ -1537,6 +1599,8 @@ async def handle_pending_on_startup(app):
     if not PENDING:
         return
     for uid, data in list(PENDING.items()):
+        if uid == "_dirty":
+            continue
         if isinstance(data, dict) and data.get("status") != "creating":
             try:
                 await app.bot.send_message(
@@ -1578,19 +1642,15 @@ async def handle_pending_on_startup(app):
                     "cloud_token": cloud_token,
                     "cuid": cuid,
                     "trial_received": False,
-                    "account_sent": True,
+                    "account_sent": False,
                     "trial_fail_sent": False
                 }
                 PENDING["_dirty"] = True
 
-                await app.bot.send_message(
-                    chat_id=int(uid),
-                    text=f"🎉 Tài khoản UMO Cloud của bạn đã được tạo bù thành công!\n\n"
-                         f"📧 Email: {email}\n"
-                         f"🔑 Mật khẩu: {new_password}\n\n"
-                         f"Bạn có muốn lấy máy sẵn không?",
-                    reply_markup=trial_question_keyboard(int(uid))
-                )
+                sent = await send_account_info(app, int(uid), email, new_password)
+                if sent:
+                    PENDING[uid]["account_sent"] = True
+                    PENDING["_dirty"] = True
 
                 try:
                     increment_user_account(int(uid))
