@@ -27,7 +27,7 @@ from telegram.ext import (
 # ==================================================================
 # CẤU HÌNH
 # ==================================================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8988947106:AAE0OdyRgF4i-a5Amu8TGjc9Ksntfj8KXhM")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8988947106:AAGVPfsOMTua-rp_U3x5Rg81tUyF8F_y1q0")
 ADMIN_ID = 7267437767
 GROUP_ID = -1004318229096
 GROUP_LINK = "https://t.me/cloudfreeaot"
