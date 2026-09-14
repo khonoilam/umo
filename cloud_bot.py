@@ -60,7 +60,7 @@ def _route_through_worker(url):
 # ==================================================================
 # GITHUB BACKUP CONFIG
 # ==================================================================
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "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").strip()
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "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").strip()
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "khonoilam/umo-data").strip()
 GITHUB_API = "https://api.github.com"
 
