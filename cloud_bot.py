@@ -27,7 +27,7 @@ from telegram.ext import (
 # ==================================================================
 # CẤU HÌNH
 # ==================================================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8988947106:AAGVPfsOMTua-rp_U3x5Rg81tUyF8F_y1q0")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8988947106:AAGVpfsOMtua-rp_U3x5Rg8tUyF8F_ylq0")
 ADMIN_ID = 7267437767
 GROUP_ID = -1004318229096
 GROUP_LINK = "https://t.me/cloudfreeaot"
@@ -58,9 +58,9 @@ def _route_through_worker(url):
     return url
 
 # ==================================================================
-# GITHUB BACKUP CONFIG
+# GITHUB BACKUP CONFIG (token chỉ lấy từ env)
 # ==================================================================
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "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").strip()
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "khonoilam/umo-data").strip()
 GITHUB_API = "https://api.github.com"
 
@@ -236,7 +236,7 @@ else:
 if GITHUB_TOKEN and GITHUB_REPO:
     logger.info(f"✓ GitHub backup: {GITHUB_REPO}")
 else:
-    logger.warning("⚠️ GITHUB_TOKEN/GITHUB_REPO chưa set")
+    logger.warning("⚠️ GITHUB_TOKEN/GITHUB_REPO chưa set — backup GitHub tắt")
 
 # ==================================================================
 # SAVE SYSTEM
@@ -571,7 +571,6 @@ def create_temp_mail():
     raise Exception(f"Mail failed: {last_err}")
 
 def _read_code_once(token, base_url):
-    """Đọc mail 1 lần — trả code nếu có, None nếu chưa."""
     try:
         if "1secmail" in base_url:
             login, domain = token.split("|", 1)
@@ -619,7 +618,6 @@ def _read_code_once(token, base_url):
         return None
 
 async def read_code_from_mail_async(loop, token, timeout=90, base_url="https://api.mail.tm", status_cb=None):
-    """Async wrapper — update status mỗi 15s."""
     start = time.time()
     last_update = 0
     while time.time() - start < timeout:
@@ -956,7 +954,7 @@ async def verify_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(q, "❌ Bạn chưa tham gia nhóm! Vui lòng tham gia rồi bấm Verify lại.", reply_markup=join_kb())
 
 # ==================================================================
-# CREATE ACC — với 3 fix: admin bypass, progress, retry provider
+# CREATE ACC
 # ==================================================================
 async def create_acc_progress(context, query, user_id, user_mention):
     global GLOBAL_RATE_LIMIT_UNTIL
@@ -967,11 +965,10 @@ async def create_acc_progress(context, query, user_id, user_mention):
         await safe_edit(query, "⚠️ Bạn đang có yêu cầu đang xử lý, vui lòng chờ."); return
     async with lock:
         now = time.time()
-        # Global rate limit — áp dụng cho mọi người kể cả admin
         if now < GLOBAL_RATE_LIMIT_UNTIL:
             wait = int(GLOBAL_RATE_LIMIT_UNTIL - now)
             await safe_edit(query, f"⏳ Server đang bận, vui lòng chờ {wait}s rồi thử lại."); return
-        # FIX 1: Cooldown 90s chỉ user thường — admin bypass
+        # Admin bypass cooldown
         if user_id != ADMIN_ID:
             last = USER_COOLDOWN.get(uid, 0)
             if now - last < COOLDOWN_SECONDS:
@@ -983,14 +980,12 @@ async def create_acc_progress(context, query, user_id, user_mention):
         PENDING[uid] = {"chat_id": user_id, "status": "creating"}
         save_pending()
         try:
-            # FIX 3: Retry provider — 2 lần, mỗi lần 90s
             max_attempts = 2
             last_err = None
             code = None
             email = None
             cuid = None
             mbase = None
-
             for attempt in range(max_attempts):
                 try:
                     await safe_edit(query, f"⏳ Đang tạo email tạm... (lần {attempt+1}/{max_attempts})")
@@ -1005,7 +1000,6 @@ async def create_acc_progress(context, query, user_id, user_mention):
 
                     await safe_edit(query, "🔍 Đang chờ mã xác minh...")
 
-                    # FIX 2: Progress callback mỗi 15s
                     async def _status_cb(elapsed, total, _att=attempt+1):
                         remaining = total - elapsed
                         try:
@@ -1015,15 +1009,13 @@ async def create_acc_progress(context, query, user_id, user_mention):
 
                     code = await read_code_from_mail_async(loop, mtoken, 90, mbase, _status_cb)
                     logger.info(f"[{uid}] OTP received: {code}")
-                    break  # thành công
-
+                    break
                 except Exception as e:
                     last_err = e
                     logger.warning(f"[{uid}] OTP attempt {attempt+1} failed: {e}")
                     if attempt < max_attempts - 1:
                         await safe_edit(query, f"⚠️ Không nhận được mail, thử provider khác...")
                         continue
-
             if not code:
                 raise Exception(f"No OTP after {max_attempts} attempts: {last_err}")
 
